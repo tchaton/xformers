@@ -41,7 +41,9 @@ def bench_matmul(dtype: torch.dtype, shapes):
             }[mode]
 
             # Pre-sparsify everything
-            _layout = torch.eye(shape[0] // block, shape[1] // block, dtype=torch.long)
+            _layout = torch.tril(
+                torch.ones((shape[0] // block, shape[1] // block), dtype=torch.long)
+            )
 
             # - blocksparse
             layout = _layout.unsqueeze(0).expand(H, -1, -1)

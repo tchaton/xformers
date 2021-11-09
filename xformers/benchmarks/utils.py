@@ -69,8 +69,8 @@ def pretty_plot(results, title, units: str, filename=None, dash_key=""):
 
     # Make sure that the plot is big enough
     f = plt.figure()
-    f.set_figwidth(6)
-    f.set_figheight(6)
+    f.set_figwidth(10)
+    f.set_figheight(10)
 
     # Display the collections
     for k, v in workloads.items():
@@ -80,7 +80,7 @@ def pretty_plot(results, title, units: str, filename=None, dash_key=""):
             plt.plot(list(results.keys()), v)
 
     plt.title(title)
-    plt.legend(list(workloads.keys()), loc="lower right")
+    plt.legend(list(workloads.keys()), loc="upper left")
     plt.ylabel(units)
     plt.xticks(rotation=45)
 

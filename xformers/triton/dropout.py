@@ -25,7 +25,7 @@ from xformers.triton.k_dropout import k_dropout_bw, k_dropout_fw
 class _dropout(torch.autograd.Function):
     @staticmethod
     @custom_fwd(cast_inputs=torch.float16)
-    def forward(ctx, x, p, bias, activation, activation_grad):
+    def forward(ctx, x, p, bias, activation, activation_grad, memory_efficient):
         # Soft-flatten an hypothetical 3rd dimension
         x_ = x.reshape(-1, x.shape[-1]).contiguous()
         y = torch.empty_like(x_)
@@ -36,6 +36,7 @@ class _dropout(torch.autograd.Function):
         # Generate one seed per sample
         # seed max is int32 max for positive numbers: 2**16
         seeds = torch.randint(65536, (x_.shape[0],), device=x.device).to(torch.int32)
+        act_inputs = torch.empty_like(x_) if not memory_efficient else x_
 
         # SPMD launch grid
         def grid(meta):
@@ -46,22 +47,27 @@ class _dropout(torch.autograd.Function):
 
         # fmt: off
         k_dropout_fw[grid](
-            y, x_, bias if bias is not None else x_,
+            y, act_inputs, x_, bias if bias is not None else x_,
             seeds,
             y.stride(0),
             N,
             p,
             USE_BIAS=bias is not None,
-            ACTIVATION=activation
+            ACTIVATION=activation,
+            SAVE_INPUTS=not memory_efficient
         )
         # fmt: on
 
-        if activation is not None:
-            ctx.save_for_backward(seeds, bias, x)
-        else:
-            ctx.save_for_backward(seeds, bias, None)
+        ctx.save_for_backward(
+            seeds,
+            bias,
+            x if activation is not None else None,
+            act_inputs if not memory_efficient else None,
+        )
+
         ctx.trainable_bias = bias is not None
         ctx.activation_grad = activation_grad
+        ctx.memory_efficient = memory_efficient
         ctx.p = p
 
         return y.reshape_as(x)
@@ -69,7 +75,7 @@ class _dropout(torch.autograd.Function):
     @staticmethod
     @custom_bwd
     def backward(ctx, grad_out):
-        (seeds, bias, inputs) = ctx.saved_tensors
+        (seeds, bias, inputs, act_inputs) = ctx.saved_tensors
 
         # Soft-flatten an hypothetical 3rd dimension
         grad_out_ = grad_out.reshape(-1, grad_out.shape[-1]).contiguous()
@@ -94,13 +100,15 @@ class _dropout(torch.autograd.Function):
 
         # fmt: off
         k_dropout_bw[grid](
-            grad_in, grad_out_, inputs, bias if bias is not None else inputs,
+            grad_in, grad_out_, inputs,
+            act_inputs if act_inputs is not None else inputs, bias if bias is not None else inputs,
             seeds,
             grad_out_.stride(0), inputs.stride(0),
             N,
             ctx.p,
             USE_BIAS=bias is not None,
-            ACTIVATION_GRAD=ctx.activation_grad)
+            ACTIVATION_GRAD=ctx.activation_grad,
+            SAVED_INPUTS=act_inputs is not None)
         # fmt: on
 
         if ctx.trainable_bias:
@@ -108,7 +116,7 @@ class _dropout(torch.autograd.Function):
         else:
             grad_bias = None
 
-        return grad_in.reshape_as(grad_out), None, grad_bias, None, None
+        return grad_in.reshape_as(grad_out), None, grad_bias, None, None, None
 
 
 def dropout(
@@ -116,10 +124,15 @@ def dropout(
     p: float,
     bias: Optional[torch.Tensor] = None,
     activation: Optional[Activation] = None,
+    memory_efficient: bool = False,
 ):
     """
     Apply dropout on the input tensor.
     Optionally add a bias, the computation will be fused.
+
+    .. note: Memory efficient trades off speed for memory use during training,
+        it has no effect on inference speed.
+
     """
 
     # Micro optim, skip dropout
@@ -128,7 +141,12 @@ def dropout(
 
     act_kernel = get_triton_activation_kernel(activation)
     act_grad_kernel = get_triton_activation_bwd_kernel(activation)
-    return _dropout.apply(x, p, bias, act_kernel, act_grad_kernel)
+
+    if not x.requires_grad:
+        # We're not training, make sure that the inputs are not saved
+        memory_efficient = True
+
+    return _dropout.apply(x, p, bias, act_kernel, act_grad_kernel, memory_efficient)
 
 
 class FusedDropoutBias(torch.nn.Module):
@@ -137,7 +155,16 @@ class FusedDropoutBias(torch.nn.Module):
         p: float,
         bias_shape: Optional[int],
         activation: Optional[Activation] = None,
+        memory_efficient: bool = False,  # default to speed
     ) -> None:
+        """
+        A Fused dropout + activation + bias layer.
+        The operationg ordering is `y = dropout(activation(x+bias))`
+
+        .. note: Memory efficient trades off speed for memory use during training,
+            it has no effect on inference speed.
+
+        """
         super().__init__()
         self.p = p
         self.activation = activation
@@ -146,7 +173,16 @@ class FusedDropoutBias(torch.nn.Module):
         )
         self.activation = get_triton_activation_kernel(activation)
         self.activation_grad = get_triton_activation_bwd_kernel(activation)
+        self.memory_efficient = memory_efficient
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         p = self.p if self.training else 0.0
-        return _dropout.apply(x, p, self.bias, self.activation, self.activation_grad)
+
+        # Make sure that the activations are not saved if we're not training anyway
+        memory_efficient = (
+            self.memory_efficient if (self.training and x.requires_grad) else True
+        )
+
+        return _dropout.apply(
+            x, p, self.bias, self.activation, self.activation_grad, memory_efficient
+        )

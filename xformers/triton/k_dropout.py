@@ -11,10 +11,11 @@ import triton
 import triton.language as tl
 
 _k_configs = [
-    triton.Config({"BLOCK_SIZE": 512}, num_warps=2),
-    triton.Config({"BLOCK_SIZE": 1024}, num_warps=4),
-    triton.Config({"BLOCK_SIZE": 2048}, num_warps=8),
-    triton.Config({"BLOCK_SIZE": 4096}, num_warps=16),
+    triton.Config({"BLOCK_SIZE": 256}, num_stages=3, num_warps=1),
+    triton.Config({"BLOCK_SIZE": 512}, num_stages=3, num_warps=2),
+    triton.Config({"BLOCK_SIZE": 1024}, num_stages=3, num_warps=4),
+    triton.Config({"BLOCK_SIZE": 2048}, num_stages=3, num_warps=8),
+    triton.Config({"BLOCK_SIZE": 4096}, num_stages=3, num_warps=16),
 ]
 
 
@@ -39,7 +40,7 @@ def _drop_and_scale(SEEDS, row, p, offsets, x):
 )
 @triton.jit
 def k_dropout_fw(
-    Y, X, BIAS, SEEDS,
+    Y, ACT_INPUTS, X, BIAS, SEEDS,
     stride,
     N,
     p,
@@ -72,6 +73,10 @@ def k_dropout_fw(
         b = tl.load(b_ptrs, mask=mask)
         x += b
 
+    if META["SAVE_INPUTS"]:
+        act_in_ptrs = ACT_INPUTS + offsets
+        tl.store(act_in_ptrs, x , mask=mask)
+
     # optional: fused activation (while the data is in shared memory)
     if META["ACTIVATION"]:
         x = META["ACTIVATION"](x)
@@ -93,7 +98,7 @@ def k_dropout_fw(
 )
 @triton.jit
 def k_dropout_bw(
-    GRAD_IN, GRAD_OUT, INPUTS, BIAS, SEEDS,
+    GRAD_IN, GRAD_OUT, INPUTS, ACT_INPUTS, BIAS, SEEDS,
     stride_grad, stride_inputs,
     N,
     p,
@@ -117,20 +122,26 @@ def k_dropout_bw(
     grad_offsets = row * stride_grad + col * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = col * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE) < N
 
-    # load data from x
+    # load the incoming grad data
     grad_out_ptrs = GRAD_OUT + grad_offsets
     grad_out = tl.load(grad_out_ptrs, mask=mask)
 
     # optional: fused activation (while the data is in shared memory)
     if META["ACTIVATION_GRAD"]:
-        input_ptrs = INPUTS + row * stride_inputs + col * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-        inputs = tl.load(input_ptrs, mask=mask)
+        if META["SAVED_INPUTS"]:
+            # Reload the activation inputs, faster
+            input_ptrs = ACT_INPUTS + row * stride_inputs + col * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+            inputs = tl.load(input_ptrs, mask=mask)
+        else:
+            # Recompute the activation inputs, more memory efficient
+            input_ptrs = INPUTS + row * stride_inputs + col * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+            inputs = tl.load(input_ptrs, mask=mask)
 
-        # optionally apply a fused bias
-        if META["USE_BIAS"]:
-            b_ptrs = BIAS + col * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-            b = tl.load(b_ptrs, mask=mask)
-            inputs += b
+            # optionally apply a fused bias
+            if META["USE_BIAS"]:
+                b_ptrs = BIAS + col * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+                b = tl.load(b_ptrs, mask=mask)
+                inputs += b
 
         act_grad = META["ACTIVATION_GRAD"](inputs)
         grad_out *= act_grad

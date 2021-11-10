@@ -101,7 +101,8 @@ def test_dropout(shape, amp, bias):
 @pytest.mark.parametrize("bias", [True, False])
 @pytest.mark.parametrize("activation", [a.value for a in Activation])
 @pytest.mark.parametrize("p", [0, 0.001, 0.5])
-def test_dropout_parity(shape, amp, bias, activation, p):
+@pytest.mark.parametrize("memory_efficient", [True, False])
+def test_dropout_parity(shape, amp, bias, activation, p, memory_efficient):
     """
     Check some basic dropout properties
     """
@@ -129,7 +130,9 @@ def test_dropout_parity(shape, amp, bias, activation, p):
         )
         loss_torch = torch.sum(res_torch)
 
-        res_triton = triton_dropout(x=x_, p=p, bias=b_, activation=activation)
+        res_triton = triton_dropout(
+            x=x_, p=p, bias=b_, activation=activation, memory_efficient=memory_efficient
+        )
         loss_triton = torch.sum(res_triton)
 
         if p < 0.01:

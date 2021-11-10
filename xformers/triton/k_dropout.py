@@ -20,17 +20,13 @@ _k_configs = [
 
 
 @triton.jit
-def _drop_and_scale(SEEDS, row, p, offsets, x):
+def _dropmask(SEEDS, row, p, offsets):
     # randomly prune the weights
     seed = SEEDS + row
     random = tl.rand(seed.to(tl.int32), offsets)
     x_keep = random > p
 
-    zero = 0.0
-    zero = zero.to(x.dtype)
-
-    # prune and normalize in one go
-    return tl.where(x_keep, (x / (1 - p)).to(x.dtype), zero)
+    return x_keep
 
 
 # fmt: off
@@ -40,7 +36,7 @@ def _drop_and_scale(SEEDS, row, p, offsets, x):
 )
 @triton.jit
 def k_dropout_fw(
-    Y, ACT_INPUTS, X, BIAS, SEEDS,
+    Y, MASK, X, BIAS, SEEDS,
     stride,
     N,
     p,
@@ -73,17 +69,20 @@ def k_dropout_fw(
         b = tl.load(b_ptrs, mask=mask)
         x += b
 
-    if META["SAVE_INPUTS"]:
-        act_in_ptrs = ACT_INPUTS + offsets
-        tl.store(act_in_ptrs, x , mask=mask)
-
     # optional: fused activation (while the data is in shared memory)
     if META["ACTIVATION"]:
         x = META["ACTIVATION"](x)
 
     # randomly prune it
     if p > 0.:
-        output = _drop_and_scale(SEEDS, row, p, offsets, x)
+        x_keep = _dropmask(SEEDS, row, p, offsets)
+        zero = 0.0
+        output = tl.where(x_keep, (x / (1 - p)).to(x.dtype),  zero.to(x.dtype))
+
+        if META["SAVE_MASK"]:
+            mask_ptrs = MASK + offsets
+            tl.store(mask_ptrs, x_keep , mask=mask)
+
     else:
         output = x
 
@@ -98,7 +97,7 @@ def k_dropout_fw(
 )
 @triton.jit
 def k_dropout_bw(
-    GRAD_IN, GRAD_OUT, INPUTS, ACT_INPUTS, BIAS, SEEDS,
+    GRAD_IN, GRAD_OUT, INPUTS, MASK, BIAS, SEEDS,
     stride_grad, stride_inputs,
     N,
     p,
@@ -128,27 +127,30 @@ def k_dropout_bw(
 
     # optional: fused activation (while the data is in shared memory)
     if META["ACTIVATION_GRAD"]:
-        if META["SAVED_INPUTS"]:
-            # Reload the activation inputs, faster
-            input_ptrs = ACT_INPUTS + row * stride_inputs + col * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-            inputs = tl.load(input_ptrs, mask=mask)
-        else:
-            # Recompute the activation inputs, more memory efficient
-            input_ptrs = INPUTS + row * stride_inputs + col * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-            inputs = tl.load(input_ptrs, mask=mask)
+        # Recompute the activation inputs, more memory efficient
+        input_ptrs = INPUTS + row * stride_inputs + col * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        inputs = tl.load(input_ptrs, mask=mask)
 
-            # optionally apply a fused bias
-            if META["USE_BIAS"]:
-                b_ptrs = BIAS + col * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-                b = tl.load(b_ptrs, mask=mask)
-                inputs += b
+        # optionally apply a fused bias
+        if META["USE_BIAS"]:
+            b_ptrs = BIAS + col * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+            b = tl.load(b_ptrs, mask=mask)
+            inputs += b
 
         act_grad = META["ACTIVATION_GRAD"](inputs)
         grad_out *= act_grad
 
     # randomly prune it
     if p > 0.:
-        output = _drop_and_scale(SEEDS, row, p, grad_offsets, grad_out)
+        if META["SAVED_MASK"]:
+            # Reload the activation inputs, faster
+            mask_ptrs = MASK + row * stride_inputs + col * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+            dropmask = tl.load(mask_ptrs, mask=mask)
+        else:
+            dropmask = _dropmask(SEEDS, row, p, grad_offsets)
+
+        zero = 0.0
+        output = tl.where(dropmask, (grad_out / (1 - p)).to(grad_out.dtype), zero.to(grad_out.dtype))
     else:
         output = grad_out
 

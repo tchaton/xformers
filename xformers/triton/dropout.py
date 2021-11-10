@@ -35,8 +35,12 @@ class _dropout(torch.autograd.Function):
 
         # Generate one seed per sample
         # seed max is int32 max for positive numbers: 2**16
-        seeds = torch.randint(65536, (x_.shape[0],), device=x.device).to(torch.int32)
-        act_inputs = torch.empty_like(x_) if not memory_efficient else x_
+        seeds = (
+            torch.randint(65536, (x_.shape[0],), device=x.device).to(torch.int32)
+            if memory_efficient
+            else x_
+        )
+        mask = torch.empty_like(x_).to(torch.bool) if not memory_efficient else x_
 
         # SPMD launch grid
         def grid(meta):
@@ -47,22 +51,22 @@ class _dropout(torch.autograd.Function):
 
         # fmt: off
         k_dropout_fw[grid](
-            y, act_inputs, x_, bias if bias is not None else x_,
+            y, mask, x_, bias if bias is not None else x_,
             seeds,
             y.stride(0),
             N,
             p,
             USE_BIAS=bias is not None,
             ACTIVATION=activation,
-            SAVE_INPUTS=not memory_efficient
+            SAVE_MASK=not memory_efficient
         )
         # fmt: on
 
         ctx.save_for_backward(
-            seeds,
+            seeds if memory_efficient else None,
             bias,
             x if activation is not None else None,
-            act_inputs if not memory_efficient else None,
+            mask if not memory_efficient else None,
         )
 
         ctx.trainable_bias = bias is not None
@@ -75,7 +79,7 @@ class _dropout(torch.autograd.Function):
     @staticmethod
     @custom_bwd
     def backward(ctx, grad_out):
-        (seeds, bias, inputs, act_inputs) = ctx.saved_tensors
+        (seeds, bias, inputs, mask) = ctx.saved_tensors
 
         # Soft-flatten an hypothetical 3rd dimension
         grad_out_ = grad_out.reshape(-1, grad_out.shape[-1]).contiguous()
@@ -101,14 +105,15 @@ class _dropout(torch.autograd.Function):
         # fmt: off
         k_dropout_bw[grid](
             grad_in, grad_out_, inputs,
-            act_inputs if act_inputs is not None else inputs, bias if bias is not None else inputs,
-            seeds,
+            mask if mask is not None else inputs,
+            bias if bias is not None else inputs,
+            seeds if seeds is not None else inputs,
             grad_out_.stride(0), inputs.stride(0),
             N,
             ctx.p,
             USE_BIAS=bias is not None,
             ACTIVATION_GRAD=ctx.activation_grad,
-            SAVED_INPUTS=act_inputs is not None)
+            SAVED_MASK=mask is not None)
         # fmt: on
 
         if ctx.trainable_bias:

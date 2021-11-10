@@ -49,34 +49,33 @@ class GPT(pl.LightningModule):
         # A list of the encoder or decoder blocks which constitute the Transformer.
         xformer_config = [
             {
-                "block_config": {
-                    "block_type": "encoder",
-                    "num_layers": self.hparams.n_layer,
-                    "dim_model": self.hparams.n_embd,
-                    "layer_norm_style": "pre",
-                    "position_encoding_config": {
-                        "name": "vocab",
+                
+                "block_type": "encoder",
+                "num_layers": self.hparams.n_layer,
+                "dim_model": self.hparams.n_embd,
+                "layer_norm_style": "pre",
+                "position_encoding_config": {
+                    "name": "vocab",
+                    "seq_len": self.hparams.block_size,
+                    "vocab_size": self.hparams.vocab_size,
+                },
+                "multi_head_config": {
+                    "num_heads": self.hparams.n_head,
+                    "residual_dropout": self.hparams.resid_pdrop,
+                    "use_rotary_embeddings": True,
+                    "attention": {
+                        "name": self.hparams.attention,
+                        "dropout": self.hparams.attn_pdrop,
+                        "causal": True,
                         "seq_len": self.hparams.block_size,
-                        "vocab_size": self.hparams.vocab_size,
                     },
-                    "multi_head_config": {
-                        "num_heads": self.hparams.n_head,
-                        "residual_dropout": self.hparams.resid_pdrop,
-                        "use_rotary_embeddings": True,
-                        "attention": {
-                            "name": self.hparams.attention,
-                            "dropout": self.hparams.attn_pdrop,
-                            "causal": True,
-                            "seq_len": self.hparams.block_size,
-                        },
-                    },
-                    "feedforward_config": {
-                        "name": "MLP",
-                        "dropout": self.hparams.mlp_pdrop,
-                        "activation": "gelu",
-                        "hidden_layer_multiplier": self.hparams.hidden_layer_multiplier,
-                    },
-                }
+                },
+                "feedforward_config": {
+                    "name": "MLP",
+                    "dropout": self.hparams.mlp_pdrop,
+                    "activation": "gelu",
+                    "hidden_layer_multiplier": self.hparams.hidden_layer_multiplier,
+                },
             }
         ]
 

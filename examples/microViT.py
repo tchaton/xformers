@@ -62,30 +62,29 @@ class VisionTransformer(pl.LightningModule):
         # A list of the encoder or decoder blocks which constitute the Transformer.
         xformer_config = [
             {
-                "block_config": {
-                    "block_type": "encoder",
-                    "num_layers": n_layer,
-                    "dim_model": dim,
-                    "seq_len": num_patches,
-                    "layer_norm_style": "pre",
-                    "multi_head_config": {
-                        "num_heads": n_head,
-                        "residual_dropout": resid_pdrop,
-                        "use_rotary_embeddings": True,
-                        "attention": {
-                            "name": attention,
-                            "dropout": attn_pdrop,
-                            "causal": False,
-                        },
+                "block_type": "encoder",
+                "num_layers": n_layer,
+                "dim_model": dim,
+                "seq_len": num_patches,
+                "layer_norm_style": "pre",
+                "multi_head_config": {
+                    "num_heads": n_head,
+                    "residual_dropout": resid_pdrop,
+                    "use_rotary_embeddings": True,
+                    "attention": {
+                        "name": attention,
+                        "dropout": attn_pdrop,
+                        "causal": False,
                     },
-                    "feedforward_config": {
-                        "name": "MLP",  # Use FusedMLP for speed if Triton is available
-                        "dropout": mlp_pdrop,
-                        "activation": "gelu",
-                        "hidden_layer_multiplier": hidden_layer_multiplier,
-                    },
-                }
+                },
+                "feedforward_config": {
+                    "name": "MLP",
+                    "dropout": mlp_pdrop,
+                    "activation": "gelu",
+                    "hidden_layer_multiplier": hidden_layer_multiplier,
+                },
             }
+            
         ]
 
         config = xFormerConfig(xformer_config)

@@ -12,7 +12,8 @@ from xformers.utils import import_all_modules
 
 from .activations import Activation, build_activation  # noqa
 from .attention import Attention, build_attention  # noqa
-from .multi_head_dispatch import MultiHeadDispatch, MultiHeadDispatchConfig  # noqa
+from .multi_head_dispatch import MultiHeadDispatch  # noqa
+from .multi_head_dispatch import MultiHeadDispatchConfig
 from .residual import LayerNormStyle, PostNorm, PreNorm, Residual  # noqa
 
 __all__ = ["MultiHeadDispatch", "Activation"]

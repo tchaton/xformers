@@ -84,7 +84,6 @@ class VisionTransformer(pl.LightningModule):
                     "hidden_layer_multiplier": hidden_layer_multiplier,
                 },
             }
-            
         ]
 
         config = xFormerConfig(xformer_config)

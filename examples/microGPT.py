@@ -49,7 +49,6 @@ class GPT(pl.LightningModule):
         # A list of the encoder or decoder blocks which constitute the Transformer.
         xformer_config = [
             {
-                
                 "block_type": "encoder",
                 "num_layers": self.hparams.n_layer,
                 "dim_model": self.hparams.n_embd,

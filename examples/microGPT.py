@@ -18,6 +18,7 @@ from torch.nn import functional as F
 from torch.utils.data import DataLoader, Dataset, RandomSampler
 
 from xformers.factory.model_factory import xFormer, xFormerConfig
+from xformers.triton import FusedLayerNorm
 
 
 class GPT(pl.LightningModule):
@@ -84,7 +85,7 @@ class GPT(pl.LightningModule):
         self.model = xFormer.from_config(config)
 
         # decoder head
-        self.ln_f = nn.LayerNorm(self.hparams.n_embd)
+        self.ln_f = FusedLayerNorm(self.hparams.n_embd)
         self.head = nn.Linear(self.hparams.n_embd, self.hparams.vocab_size, bias=False)
 
         self.block_size = self.hparams.block_size
@@ -271,12 +272,12 @@ def sample(model, x, steps, temperature=1.0, sample=False, top_k=None):
 if __name__ == "__main__":
     seed_everything(42)
     REF_BATCH = 512
-    BATCH = 256  # adjust depending on the avaiable memory on your machine
-    WORKERS = 8
+    BATCH = 512  # adjust depending on the avaiable memory on your machine
+    WORKERS = 4
     EPOCHS = 1
     BLOCK = 128
     WARMUP = 20
-    LR = 5e-5
+    LR = 1e-3
 
     if not os.path.exists("input.txt"):
         os.system(
@@ -299,7 +300,7 @@ if __name__ == "__main__":
     model = GPT(
         vocab_size=train_dataset.vocab_size,
         block_size=train_dataset.block_size,
-        attention="nystrom",
+        attention="scaled_dot_product",
         warmup_tokens=REF_BATCH * WARMUP,
         learning_rate=LR,
         final_tokens=EPOCHS * len(train_dataset) * BLOCK,

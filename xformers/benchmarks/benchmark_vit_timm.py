@@ -11,12 +11,14 @@
 
 # Orignal author: Sean Naren
 
+import argparse
 import math
 from enum import Enum
 
 import pytorch_lightning as pl
 import torch
 from pl_bolts.datamodules import CIFAR10DataModule
+from pytorch_lightning.profiler import PyTorchProfiler
 from timm.models.vision_transformer import VisionTransformer as TimmVisionTransformer
 from torch import nn
 from torchmetrics import Accuracy
@@ -234,10 +236,38 @@ class VisionTransformer(pl.LightningModule):
         self.evaluate(batch, "test")
 
 
+def _get_trace_handler(name: str):
+    def trace_handler(prof):
+        prof.export_chrome_trace(f"profile_{name}.json")
+        prof.export_stacks(f"stacks_{name}.txt", "self_cuda_time_total")
+
+    return trace_handler
+
+
 if __name__ == "__main__":
+    # Get the user requests
+    parser = argparse.ArgumentParser("Benchmark xformers and timm ViTs")
+    parser.add_argument(
+        "-timm",
+        "--timm",
+        help="Use the ViT implementation from Timm",
+        action="store_true",
+        default=False,
+    )
+
+    parser.add_argument(
+        "-profile",
+        "--profile",
+        help="Pofile the runtime and memory",
+        action="store_true",
+        default=False,
+    )
+
+    args = parser.parse_args()
+
     pl.seed_everything(42)
-    BATCH_SIZE = 512
-    MAX_EPOCHS = 10
+    BATCH_SIZE = 1024
+    MAX_EPOCHS = 1
     NUM_WORKERS = 4
     GPUS = 1
 
@@ -281,10 +311,24 @@ if __name__ == "__main__":
         image_size=image_size,
         num_classes=num_classes,
         attention="scaled_dot_product",
-        use_timm=False,
+        use_timm=args.timm,
     )
+    profiler = (
+        PyTorchProfiler(
+            filename="timm_profile" if args.timm else "xFormers_profile",
+            export_to_chrome=True,
+            record_functions={"training_step_and_backward"},
+        )
+        if args.profile
+        else None
+    )
+
     trainer = pl.Trainer(
-        gpus=GPUS, max_epochs=MAX_EPOCHS, detect_anomaly=True, precision=16
+        gpus=GPUS,
+        max_epochs=MAX_EPOCHS,
+        detect_anomaly=True,
+        precision=16,
+        profiler=profiler,
     )
     trainer.fit(lm, dm)
 
